@@ -1,87 +1,144 @@
+
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 import numpy as np
 
-# ===============================
-# GLOBAL GRAPH SETTINGS ⭐
-# ===============================
-plt.style.use("ggplot")              # nice graph theme
-plt.rcParams["figure.figsize"] = (12, 6)
-plt.rcParams["font.size"] = 12
+# ==========================================
+# 1️⃣ LOAD DATASET
+# ==========================================
+file_path = "../data/cybersecurity_intrusion_data.csv"
+# file_path = "UNSW_NB15_training-set.csv"
 
-# ===============================
-# 1. Load Dataset
-# ===============================
-data = pd.read_csv("../data/cybersecurity_intrusion_data.csv")
+data = pd.read_csv(file_path)
 
-# ===============================
-# 2. Data Preprocessing
-# ===============================
-print("Missing values per column:")
-print(data.isnull().sum())
+print("\nDataset Loaded Successfully")
+print("Shape:", data.shape)
 
-data["encryption_used"] = data["encryption_used"].fillna("None")
+if len(data) > 50000:
+    data = data.sample(5000, random_state=42)
+    print("Large dataset detected. Sampled 5000 rows for analysis.")
 
-print("\nAfter preprocessing:")
-print(data.isnull().sum())
+# (HANDLE LABEL SAFELY )
+label_column = None
 
-# Convert to numeric
-numeric_cols = [
-    "network_packet_size",
-    "login_attempts",
-    "session_duration",
-    "ip_reputation_score",
-    "failed_logins",
-    "unusual_time_access",
-    "attack_detected"
-]
+# Prefer numeric label column
+if "label" in data.columns:
+    label_column = "label"
 
+elif "attack_detected" in data.columns:
+    label_column = "attack_detected"
+
+# Convert label to numeric
+if label_column:
+    if not pd.api.types.is_numeric_dtype(data[label_column]):
+        data[label_column] = pd.factorize(data[label_column])[0]
+
+print("Using label column:", label_column)
+
+# ==========================================
+# 3️⃣ NUMERIC COLUMN DETECTION
+# ==========================================
+numeric_cols = data.select_dtypes(include=np.number).columns
 data[numeric_cols] = data[numeric_cols].apply(pd.to_numeric)
 
-# Clip extreme values
-data["session_duration"] = data["session_duration"].clip(
-    lower=data["session_duration"].quantile(0.01),
-    upper=data["session_duration"].quantile(0.99)
-)
+# ==========================================
+# 4️⃣ AUTO DETECT THREAT & CONTROL FEATURES
+# ==========================================
+THREAT_KEYWORDS = ["attack", "login", "failed", "malicious",
+                   "intrusion", "threat"]
 
-data["network_packet_size"] = data["network_packet_size"].clip(
-    lower=data["network_packet_size"].quantile(0.01),
-    upper=data["network_packet_size"].quantile(0.99)
-)
+CONTROL_KEYWORDS = ["reputation", "security", "patch",
+                    "control", "defense", "protection"]
 
-# ===============================
-# 3. Threat Vectors (X1)
-# ===============================
-data["X1"] = (
-    data["login_attempts"]
-    + data["failed_logins"]
-    + data["unusual_time_access"]
-    + data["attack_detected"]
-)
+THREAT_COLUMNS = []
+CONTROL_COLUMNS = []
 
-# ===============================
-# 4. Security Controls (X2)
-# ===============================
-data["encryption_flag"] = data["encryption_used"].apply(
-    lambda x: 0 if x == "None" else 1
-)
+for col in numeric_cols:
+    col_lower = col.lower()
 
-data["X2"] = data["encryption_flag"] + data["ip_reputation_score"]
+    if col == label_column:
+        continue  
+    if any(keyword in col_lower for keyword in THREAT_KEYWORDS):
+        THREAT_COLUMNS.append(col)
 
-# ===============================
-# 5. Cyber Risk Score
-# ===============================
+    elif any(keyword in col_lower for keyword in CONTROL_KEYWORDS):
+        CONTROL_COLUMNS.append(col)
+
+# Fallback if nothing detected
+if len(THREAT_COLUMNS) == 0:
+    THREAT_COLUMNS = list(numeric_cols[:len(numeric_cols)//2])
+
+if len(CONTROL_COLUMNS) == 0:
+    CONTROL_COLUMNS = list(numeric_cols[len(numeric_cols)//2:])
+
+print("\nDetected Threat Columns:", THREAT_COLUMNS)
+print("Detected Control Columns:", CONTROL_COLUMNS)
+
+# ==========================================
+# 5️⃣ OUTLIER HANDLING
+# ==========================================
+for col in numeric_cols:
+    data[col] = data[col].clip(
+        lower=data[col].quantile(0.01),
+        upper=data[col].quantile(0.99)
+    )
+
+# ==========================================
+# 6️⃣ CALCULATE X1 & X2
+# ==========================================
+data["X1"] = data[THREAT_COLUMNS].sum(axis=1)
+data["X2"] = data[CONTROL_COLUMNS].sum(axis=1)
+
+# ==========================================
+# 7️⃣ AUTO WEIGHT LEARNING
+# ==========================================
+if label_column:
+    corr_x1 = abs(data["X1"].corr(data[label_column]))
+    corr_x2 = abs(data["X2"].corr(data[label_column]))
+else:
+    corr_x1, corr_x2 = 0.6, 0.4
+
+total_corr = corr_x1 + corr_x2
+
+if total_corr == 0:
+    C1, C2 = 0.6, 0.4
+else:
+    C1 = corr_x1 / total_corr
+    C2 = corr_x2 / total_corr
+
 C = 100
-C1 = 0.6
-C2 = 0.4
 
+print("\n--- AUTO WEIGHT LEARNING ---")
+print("Threat Weight (C1):", round(C1, 3))
+print("Control Weight (C2):", round(C2, 3))
+
+# ==========================================
+# 8️⃣ CYBER RISK SCORE
+# ==========================================
 data["Cyber_Risk_Score"] = C - (C1 * data["X1"]) + (C2 * data["X2"])
 
-# ===============================
-# Risk Classification
-# ===============================
-def classify_risk(score):
+# ==========================================
+# 9️⃣ CIA MODEL
+# ==========================================
+data["Confidentiality"] = data["X1"]
+data["Integrity"] = data["X1"]
+data["Availability"] = data["X2"]
+
+for col in ["Confidentiality", "Integrity", "Availability"]:
+    if data[col].max() != 0:
+        data[col] = (data[col] / data[col].max()) * 10
+
+data["CIA_Score"] = data[["Confidentiality",
+                          "Integrity",
+                          "Availability"]].mean(axis=1)
+
+data["Enhanced_Risk_Score"] = data["Cyber_Risk_Score"] - (data["CIA_Score"] * 0.5)
+
+# ==========================================
+# 🔟 RISK CLASSIFICATION
+# ==========================================
+def classify(score):
     if score >= 97:
         return "LOW RISK"
     elif score >= 94:
@@ -89,123 +146,109 @@ def classify_risk(score):
     else:
         return "HIGH RISK"
 
-data["Risk_Level"] = data["Cyber_Risk_Score"].apply(classify_risk)
+data["Risk_Level"] = data["Enhanced_Risk_Score"].apply(classify)
 
-print("\n--- ALERT REPORT ---")
-print("High Risk Sessions:", (data["Risk_Level"] == "HIGH RISK").sum())
-print("Medium Risk Sessions:", (data["Risk_Level"] == "MEDIUM RISK").sum())
-print("Low Risk Sessions:", (data["Risk_Level"] == "LOW RISK").sum())
+# ==========================================
+# 1️⃣1️⃣ OVERALL STATUS
+# ==========================================
+overall_score = data["Enhanced_Risk_Score"].mean()
 
-# ===============================
-# GRAPH 1: Components of Variation
-# ===============================
-data[[
-    "network_packet_size",
-    "login_attempts",
-    "session_duration",
-    "failed_logins",
-    "ip_reputation_score"
-]].var().plot(kind="bar", color="skyblue")
+if overall_score >= 97:
+    overall_status = "LOW RISK"
+    alert_message = "System stable."
+elif overall_score >= 94:
+    overall_status = "MEDIUM RISK"
+    alert_message = "Moderate risk detected."
+else:
+    overall_status = "HIGH RISK"
+    alert_message = "CRITICAL ALERT!"
 
+print("\n--- OVERALL SYSTEM STATUS ---")
+print("Average Cyber Risk Score:", round(overall_score,3))
+print("Overall Risk Level:", overall_status)
+print("Alert:", alert_message)
+
+# ==========================================
+# 1️⃣2️⃣ STATISTICAL VALIDATION
+# ==========================================
+mean = data["Enhanced_Risk_Score"].mean()
+std = data["Enhanced_Risk_Score"].std()
+n = len(data)
+
+UCL = mean + 3*std
+LCL = mean - 3*std
+
+USL = 100
+LSL = 90
+
+Cp = (USL - LSL) / (6 * std)
+Cpk = min((USL - mean)/(3*std), (mean - LSL)/(3*std))
+
+# stat, p_value = stats.shapiro(data["Enhanced_Risk_Score"])
+sample_data = data["Enhanced_Risk_Score"].sample(500)
+stat, p_value = stats.shapiro(sample_data)
+
+print("\n--- STATISTICAL REPORT ---")
+print("Sample Size (n):", n)
+print("Mean:", round(mean,3))
+print("Std Dev:", round(std,3))
+print("p-value:", round(p_value,6))
+print("Cp:", round(Cp,3))
+print("Cpk:", round(Cpk,3))
+
+# ==========================================
+# 1️⃣3️⃣ FULL GRAPH SECTION
+# ==========================================
+
+# 1️⃣ Gage R&R – Components of Variation
+plt.figure()
+data[numeric_cols].var().plot(kind="bar")
+plt.title("Components of Variation (Gage R&R Approximation)")
 plt.ylabel("Variance")
-plt.title("Components of Variation")
 plt.xticks(rotation=45)
 plt.tight_layout()
 plt.show()
 
-# ===============================
-# GRAPH 2: Normal Probability Plot
-# ===============================
+# 2️⃣ Normal Probability Plot
 plt.figure()
-stats.probplot(data["Cyber_Risk_Score"], dist="norm", plot=plt)
-plt.title("Normal Probability Plot of Cyber Risk Score")
-plt.grid(True, color="lightgray")
+stats.probplot(data["Enhanced_Risk_Score"], dist="norm", plot=plt)
+plt.title("Normal Probability Plot of Enhanced Risk Score")
 plt.tight_layout()
 plt.show()
 
-stat, p_value = stats.shapiro(data["Cyber_Risk_Score"])
-print("\nNormality Test p-value:", p_value)
+# 3️⃣ X1 vs Enhanced Risk
+plt.figure()
+plt.scatter(data["X1"], data["Enhanced_Risk_Score"], alpha=0.6)
 
-# ===============================
-# GRAPH 3: X1 vs Risk
-# ===============================
-plt.scatter(data["X1"], data["Cyber_Risk_Score"], alpha=0.6, color="orange")
-
-m1, b1 = np.polyfit(data["X1"], data["Cyber_Risk_Score"], 1)
-plt.plot(data["X1"], m1 * data["X1"] + b1, color="red", linewidth=2)
+m1, b1 = np.polyfit(data["X1"], data["Enhanced_Risk_Score"], 1)
+plt.plot(data["X1"], m1 * data["X1"] + b1)
 
 plt.xlabel("Active Threat Vectors (X1)")
-plt.ylabel("Cyber Risk Score")
-plt.title("X1 vs Cyber Risk Score")
+plt.ylabel("Enhanced Risk Score")
+plt.title("X1 vs Enhanced Risk Score")
 plt.tight_layout()
 plt.show()
 
-# ===============================
-# GRAPH 4: X2 vs Risk
-# ===============================
-plt.scatter(data["X2"], data["Cyber_Risk_Score"], alpha=0.6, color="green")
+# 4️⃣ X2 vs Enhanced Risk
+plt.figure()
+plt.scatter(data["X2"], data["Enhanced_Risk_Score"], alpha=0.6)
 
-m2, b2 = np.polyfit(data["X2"], data["Cyber_Risk_Score"], 1)
-plt.plot(data["X2"], m2 * data["X2"] + b2, color="blue", linewidth=2)
+m2, b2 = np.polyfit(data["X2"], data["Enhanced_Risk_Score"], 1)
+plt.plot(data["X2"], m2 * data["X2"] + b2)
 
 plt.xlabel("Security Controls (X2)")
-plt.ylabel("Cyber Risk Score")
-plt.title("X2 vs Cyber Risk Score")
+plt.ylabel("Enhanced Risk Score")
+plt.title("X2 vs Enhanced Risk Score")
 plt.tight_layout()
 plt.show()
 
-# ===============================
-# GRAPH 5: Stability Control Chart
-# ===============================
-mean = data["Cyber_Risk_Score"].mean()
-std = data["Cyber_Risk_Score"].std()
-
-UCL = mean + 3 * std
-LCL = mean - 3 * std
-
-plt.plot(data["Cyber_Risk_Score"], marker="o", linestyle="-", alpha=0.5, color="purple")
-
-plt.axhline(mean, linestyle="-", linewidth=2, color="black", label="Mean")
-plt.axhline(UCL, linestyle="--", linewidth=2, color="red", label="UCL (+3σ)")
-plt.axhline(LCL, linestyle="--", linewidth=2, color="red", label="LCL (-3σ)")
-
-plt.xlabel("Session Index")
-plt.ylabel("Cyber Risk Score")
-plt.title("Stability Control Chart")
-plt.legend()
-plt.grid(True)
+# 5️⃣ Stability Chart
+plt.figure()
+plt.plot(data["Enhanced_Risk_Score"], marker='o', linestyle='')
+plt.axhline(mean)
+plt.axhline(UCL, linestyle="--")
+plt.axhline(LCL, linestyle="--")
+plt.title("Stability Chart")
 plt.tight_layout()
 plt.show()
-
-# ===============================
-# GRAPH 6: Capability Analysis
-# ===============================
-plt.hist(data["Cyber_Risk_Score"], bins=25, density=True, alpha=0.6, color="lightgreen")
-
-x = np.linspace(mean - 4*std, mean + 4*std, 200)
-plt.plot(x, stats.norm.pdf(x, mean, std), color="darkgreen", linewidth=2)
-
-plt.xlabel("Cyber Risk Score")
-plt.ylabel("Density")
-plt.title("Process Capability Analysis")
-plt.grid(True)
-plt.tight_layout()
-plt.show()
-
-# ===============================
-# GRAPH 7: Risk Level Distribution
-# ===============================
-data["Risk_Level"].value_counts().plot(kind="bar", color=["red", "orange", "green"])
-
-plt.xlabel("Risk Level")
-plt.ylabel("Number of Sessions")
-plt.title("Risk Level Distribution")
-plt.xticks(rotation=0)
-plt.tight_layout()
-plt.show()
-
-# ===============================
-# Save Final Report
-# ===============================
-data.to_csv("final_risk_report.csv", index=False)
-print("\nFinal report saved as final_risk_report.csv")
+...
