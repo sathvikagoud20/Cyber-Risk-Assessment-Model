@@ -89,6 +89,24 @@ The project uses a cybersecurity intrusion detection dataset containing network 
 * Multi-dataset validation
 * SOAR integration for automated response
 
+
+## Project Outputs
+
+### Components of Variation
+![Components of Variation](components-of-variation.png)
+
+### Normal Probability Plot
+![Normal Probability Plot](normal-probability-plot.png)
+
+### X1 vs Enhanced Risk Score
+![X1 vs Enhanced Risk Score](x1-vs-enhanced-risk-score.png)
+
+### X2 vs Enhanced Risk Score
+![X2 vs Enhanced Risk Score](x2-vs-enhanced-risk-score.png)
+
+### Stability Chart
+![Stability Chart](stability-chart.png)
+
 ## Author
 
 Chinthakula Sathvika
